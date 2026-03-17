@@ -22,7 +22,7 @@ import pandas as pd
 from datetime import datetime
 
 from enrichment import config
-from enrichment.memory import load_memory
+from enrichment.memory import load_memory, save_memory
 from enrichment.nlp_extractor import extract_new_company_nlp, load_nlp_model
 from enrichment.linkedin import smart_linkedin_search
 from enrichment.website import smart_website_search
@@ -329,26 +329,56 @@ def main() -> None:
         industry = str(row.get("Industry", "")).strip()
 
         try:
-            # ── 1. Find LinkedIn profile ─────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
+            # FIX #1: INPUT VALIDATION (Skip invalid rows)
+            # ──────────────────────────────────────────────────────────────
+            is_valid, error_msg = _validate_row_data(row_id, name, company, location, industry)
+            if not is_valid:
+                logger.warning(f"Skipping ID {row_id}: {error_msg}")
+                stats.add_error()
+                continue
+            
+            # ──────────────────────────────────────────────────────────────
+            # STEP 2: Find LinkedIn profile
+            # ──────────────────────────────────────────────────────────────
             linkedin_url, snippet, job_status, confidence = smart_linkedin_search(
                 name, company, location, industry, memory
             )
 
-            # Brief pause between LinkedIn and website searches
-            time.sleep(config.DELAY_SECONDS + random.uniform(-3, 5))
+            # FIX #2: SAFE SLEEP (Guaranteed >= 1 second, no negative values)
+            _safe_sleep(config.DELAY_SECONDS)
 
-            # ── 2. Find company website ──────────────────────────────────────
+            # ──────────────────────────────────────────────────────────────
+            # STEP 3: Find company website
+            # ──────────────────────────────────────────────────────────────
             csv_website      = smart_website_search(company, location, industry)
             current_company  = company
             current_website  = csv_website
 
-            # ── 3. Resolve new company if job change detected ────────────────
+            # ──────────────────────────────────────────────────────────────
+            # STEP 4: Resolve new company if job change detected
+            # ──────────────────────────────────────────────────────────────
             if job_status == "Match but need update":
                 current_company = extract_new_company_nlp(snippet, company)
                 if current_company != "Unknown Company":
                     current_website = smart_website_search(current_company, location, industry)
 
-            # ── 4. Build output row - keep only desired columns + enrichment ──
+            # ──────────────────────────────────────────────────────────────
+            # FIX #4: URL VALIDATION (Validate LinkedIn & website URLs)
+            # ──────────────────────────────────────────────────────────────
+            if not _validate_linkedin_url(linkedin_url):
+                logger.warning(f"ID {row_id}: Invalid LinkedIn URL format: {linkedin_url}")
+                linkedin_url = "Not Found"
+
+            if not _validate_website_url(csv_website):
+                csv_website = "Not Found"
+
+            if not _validate_website_url(current_website):
+                current_website = "Not Found"
+
+            # ──────────────────────────────────────────────────────────────
+            # STEP 5: Build output row - keep only desired columns + enrichment
+            # ──────────────────────────────────────────────────────────────
             row_data = {}
             
             # Keep only specified columns from input
@@ -368,12 +398,35 @@ def main() -> None:
                 "Confidence_%":         confidence,
             })
             
-            _append_row(row_data)
-
-            stats.add_success(confidence)
-            _print_record_status(idx, total_rows, row_id, name, company, job_status, confidence)
+            # ──────────────────────────────────────────────────────────────
+            # FIX #5: CSV WRITE WITH RETRY (3 attempts with exponential backoff)
+            # ──────────────────────────────────────────────────────────────
+            if _append_row_safe(row_data, max_retries=3):
+                stats.add_success(confidence)
+                _print_record_status(idx, total_rows, row_id, name, company, job_status, confidence)
+            else:
+                stats.add_error()
+                logger.error(f"✗ ID {row_id}: Failed to write output row after retries")
+                # Continue to next row instead of crashing
+                continue
+            
+            # ──────────────────────────────────────────────────────────────
+            # FIX #3: SAVE MEMORY AFTER SUCCESS (Before rate-limit waits)
+            # ──────────────────────────────────────────────────────────────
+            try:
+                save_memory(memory)
+            except Exception as e:
+                logger.warning(f"Failed to save memory: {str(e)[:50]}")
 
         except RateLimitException:
+            # ──────────────────────────────────────────────────────────────
+            # FIX #3: SAVE MEMORY BEFORE RATE-LIMIT WAIT (Don't lose weights)
+            # ──────────────────────────────────────────────────────────────
+            try:
+                save_memory(memory)
+            except Exception as e:
+                logger.warning(f"Failed to save memory before wait: {str(e)[:50]}")
+            
             wait_sec = config.BLOCK_WAIT_MINUTES * 60
             print("\n" + "-"*80)
             logger.warning(
@@ -387,6 +440,7 @@ def main() -> None:
             stats.add_error()
             error_msg = str(exc)[:80]
             logger.error(f"✗ Error on ID {row_id}: {error_msg}")
+            # Continue processing — don't crash on individual row errors
 
     stats.display_summary()
     logger.info(f"✓ Output file: {config.OUTPUT_FILE}")
