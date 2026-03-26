@@ -20,7 +20,7 @@
 
 ### **The Problem**
 
-You have a spreadsheet with 1,700 people and companies:
+You have a spreadsheet with 1,700 people and companies (example):
 
 ```
 Name                Company              Location
@@ -135,7 +135,7 @@ Total rows to process: 1700 | Already processed: 0
 Min confidence threshold: 60%
 Output columns: ID, Name, Position, Company, Industry, Location, LinkedIn_URL, Website_Link, Confidence_%
 ════════════════════════════════════════════════════════════════════════════════
-ID      | Status     | Name                 | Company              | Confidence
+ID      | Status     | Name                     | Company              | Confidence
 
 1       | Y Match    | John Smith           | Acme Corp            |  85%
 2       | Y Match    | Sarah Johnson        | Tech Inc             |  92%
