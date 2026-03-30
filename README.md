@@ -268,6 +268,68 @@ BRIGHTDATA_ZONE=your-zone
 - `oxylabs` - Oxylabs (good, ~$15/month)
 - `smartproxy` - SmartProxy (budget, ~$8/month)
 
+### **Dynamic Proxy Auto-Switch (Recommended)**
+
+You can now run with automatic proxy/provider switching and direct fallback:
+
+```env
+PROXY_SERVICE=auto
+AUTO_PROVIDER_PRIORITY=smartproxy,oxylabs,brightdata,generic,manual,none
+PROXY_AUTO_SWITCH=true
+PROXY_FALLBACK_TO_DIRECT=true
+```
+
+This means the pipeline will:
+- Try providers in priority order
+- Rotate proxy endpoints per request
+- Mark failed proxies and move to healthy ones
+- Fall back to direct connection when all proxies fail
+
+### **Provider-Agnostic Mode (Any Proxy Provider)**
+
+Use your provider gateway directly:
+
+```env
+PROXY_SERVICE=generic
+GENERIC_PROXY_URL=http://username:password@gateway.provider.com:10000
+```
+
+Or give a pool:
+
+```env
+GENERIC_PROXY_POOL=http://u:p@ip1:port,http://u:p@ip2:port
+```
+
+---
+
+## 🖥️ Monitoring UI + One-Click Setup
+
+You now have a live dashboard for:
+- Enrichment progress and output preview
+- Search history with proxy provider usage
+- Runtime events and error tracking
+- Log tail (`enrichment.log`)
+- Start/stop controls to run the enrichment pipeline directly from the UI
+
+### **One Command to Install + Run**
+
+```bash
+python one_click.py
+```
+
+Default behavior:
+1. Installs all dependencies
+2. Starts enrichment pipeline
+3. Opens monitoring dashboard (Streamlit)
+
+Extra modes:
+
+```bash
+python one_click.py --dashboard-only
+python one_click.py --pipeline-only
+python one_click.py --skip-install
+```
+
 ---
 
 ## 📊 Understanding Results

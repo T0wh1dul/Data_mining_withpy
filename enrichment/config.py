@@ -16,6 +16,10 @@ load_dotenv()  # Reads .env from the current working directory
 INPUT_FILE  = Path(os.getenv("INPUT_FILE",  "Split_Data_Part_1.csv"))
 OUTPUT_FILE = Path(os.getenv("OUTPUT_FILE", "Enriched_Data_Output_Ultimate.csv"))
 MEMORY_FILE = OUTPUT_FILE.parent / "query_memory.json"
+SEARCH_HISTORY_FILE = OUTPUT_FILE.parent / "search_history.jsonl"
+EVENTS_FILE = OUTPUT_FILE.parent / "run_events.jsonl"
+PIPELINE_PID_FILE = OUTPUT_FILE.parent / "pipeline.pid"
+PIPELINE_RUNTIME_LOG = OUTPUT_FILE.parent / "pipeline_runtime.log"
 
 # ── Timing ───────────────────────────────────────────────────────────────────
 DELAY_SECONDS      = int(os.getenv("DELAY_SECONDS",      "15"))

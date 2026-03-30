@@ -2,3 +2,5 @@ pandas
 ddgs
 spacy
 python-dotenv
+streamlit
+streamlit-autorefresh

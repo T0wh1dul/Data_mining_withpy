@@ -18,6 +18,8 @@ import logging
 from typing import List, Dict, Optional
 from ddgs import DDGS
 
+from enrichment.monitor import log_event, log_search_event
+
 logger = logging.getLogger(__name__)
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -89,10 +91,11 @@ def _fetch(query: str, max_res: int) -> List[Dict]:
     """
     try:
         # Import proxy manager here to avoid circular imports
-        from enrichment.proxy_manager import get_next_proxy, mark_proxy_failed
+        from enrichment.proxy_manager import get_next_proxy, mark_proxy_failed, get_active_provider
         from enrichment import proxy_config
         
         proxy = get_next_proxy() if proxy_config.PROXY_SERVICE != "none" else None
+        provider = get_active_provider()
         
         with DDGS(timeout=SEARCH_TIMEOUT, proxy=proxy) as ddgs:
             try:
@@ -101,6 +104,14 @@ def _fetch(query: str, max_res: int) -> List[Dict]:
                 # Mark proxy as failed before checking rate limit
                 if proxy:
                     mark_proxy_failed(proxy)
+                log_search_event(
+                    query=query,
+                    max_results=max_res,
+                    status="error",
+                    provider=provider,
+                    error=str(exc),
+                )
+                log_event("search_error", level="warning", provider=provider, query=query, error=str(exc)[:200])
                 _check_rate_limit(exc)
                 raise
             
@@ -113,12 +124,34 @@ def _fetch(query: str, max_res: int) -> List[Dict]:
                 # Empty result could mean rate-limited; probe with a neutral query
                 probe = list(ddgs.text("technology news", max_results=1))
                 if not probe:
+                    log_search_event(
+                        query=query,
+                        max_results=max_res,
+                        status="rate_limited",
+                        provider=provider,
+                    )
+                    log_event("rate_limit_detected", level="warning", provider=provider, query=query)
                     raise RateLimitException("Empty response on probe — likely rate limited.")
-            
+
+            log_search_event(
+                query=query,
+                max_results=max_res,
+                status="ok",
+                provider=provider,
+                result_count=len(results),
+            )
             return results
             
     except TimeoutError:
         logger.error(f"Search timeout ({SEARCH_TIMEOUT}s) for query: {query!r}")
+        log_search_event(
+            query=query,
+            max_results=max_res,
+            status="timeout",
+            provider="unknown",
+            error="timeout",
+        )
+        log_event("search_timeout", level="warning", query=query)
         raise RateLimitException(f"Search timeout - likely rate limited")
     except Exception as exc:
         # Re-raise if already a custom exception

@@ -7,7 +7,7 @@ Supports multiple proxy services with automatic fallback.
 
 import logging
 import random
-from typing import Optional, Dict
+from typing import Optional, List, Dict
 from urllib.parse import urlparse
 
 from enrichment import proxy_config
@@ -16,32 +16,37 @@ logger = logging.getLogger(__name__)
 
 
 class ProxyManager:
-    """Manages rotating proxy selection and failover."""
+    """Manages proxy provider selection, rotation, and failover."""
     
     def __init__(self):
         self.service = proxy_config.PROXY_SERVICE
-        self.proxies = []
-        self.current_index = 0
-        self.failed_proxies = set()
-        self._init_proxies()
+        self.provider_order: List[str] = []
+        self.provider_proxies: Dict[str, List[str]] = {}
+        self.provider_failed: Dict[str, set] = {}
+        self.active_provider_name = "none"
+        self.current_proxy = None
+        self._init_providers()
     
-    def _init_proxies(self):
-        """Initialize proxy list based on configured service."""
-        if self.service == "brightdata":
-            self.proxies = self._build_brightdata_proxies()
-        elif self.service == "oxylabs":
-            self.proxies = self._build_oxylabs_proxies()
-        elif self.service == "smartproxy":
-            self.proxies = self._build_smartproxy_proxies()
-        elif self.service == "manual":
-            self.proxies = proxy_config.MANUAL_PROXIES
+    def _init_providers(self):
+        """Build provider map based on selected mode."""
+        if self.service == "auto":
+            providers = proxy_config.AUTO_PROVIDER_PRIORITY
         else:
-            self.proxies = []  # No proxy
-        
-        if self.proxies:
-            logger.info(f"[PROXY] Service: {self.service} | Proxies: {len(self.proxies)}")
-        else:
-            logger.info("[PROXY] No proxy configured - using direct connection")
+            providers = [self.service]
+            if proxy_config.PROXY_FALLBACK_TO_DIRECT and "none" not in providers:
+                providers.append("none")
+
+        valid = {"brightdata", "oxylabs", "smartproxy", "generic", "manual", "none"}
+        self.provider_order = [p for p in providers if p in valid]
+        if not self.provider_order:
+            self.provider_order = ["none"]
+
+        for provider in self.provider_order:
+            proxies = self._build_provider_proxies(provider)
+            self.provider_proxies[provider] = proxies
+            self.provider_failed[provider] = set()
+
+        logger.info(f"[PROXY] Mode={self.service} | Providers={self.provider_order}")
     
     def _build_brightdata_proxies(self) -> list:
         """Build Bright Data proxy URLs."""
@@ -78,47 +83,99 @@ class ProxyManager:
         password = proxy_config.SMARTPROXY_PASSWORD
         proxy_url = f"http://{username}:{password}@{proxy_config.SMARTPROXY_PROXY}"
         return [proxy_url]
+
+    def _build_provider_proxies(self, provider: str) -> List[str]:
+        """Return proxy list for one provider."""
+        if provider == "brightdata":
+            return self._build_brightdata_proxies()
+        if provider == "oxylabs":
+            return self._build_oxylabs_proxies()
+        if provider == "smartproxy":
+            return self._build_smartproxy_proxies()
+        if provider == "manual":
+            return list(proxy_config.MANUAL_PROXIES)
+        if provider == "generic":
+            generic = list(proxy_config.GENERIC_PROXY_POOL)
+            if proxy_config.GENERIC_PROXY_URL:
+                generic.append(proxy_config.GENERIC_PROXY_URL)
+            return generic
+        return []
     
-    def get_next_proxy(self) -> Optional[Dict]:
+    def get_next_proxy(self) -> Optional[str]:
         """
-        Get next proxy in rotation.
-        Returns dict with 'http' and 'https' keys for requests library.
+        Get next proxy URL in rotation.
+        Returns a proxy string URL for DDGS.
         Returns None for no proxy.
         """
-        if not self.proxies:
+        if not self.provider_order:
+            self.active_provider_name = "none"
             return None
-        
-        # Filter out failed proxies
-        available = [p for p in self.proxies if p not in self.failed_proxies]
-        
-        if not available:
-            logger.warning("[PROXY] All proxies failed - falling back to direct connection")
-            if proxy_config.PROXY_FALLBACK_TO_DIRECT:
-                self.failed_proxies.clear()
+
+        start_idx = self.provider_order.index(self.active_provider_name) if self.active_provider_name in self.provider_order else 0
+        total = len(self.provider_order)
+
+        for offset in range(total):
+            idx = (start_idx + offset) % total
+            provider = self.provider_order[idx]
+            if provider == "none":
+                self.active_provider_name = "none"
+                self.current_proxy = None
                 return None
-            # Reset failed proxies and try again
-            self.failed_proxies.clear()
-            available = self.proxies
-        
-        proxy = random.choice(available)
-        self.current_index = self.proxies.index(proxy)
-        
-        logger.debug(f"[PROXY] Using proxy: {self._sanitize_url(proxy)}")
-        
-        return {
-            "http": proxy,
-            "https": proxy,
-        }
+
+            proxies = self.provider_proxies.get(provider, [])
+            failed = self.provider_failed.get(provider, set())
+            available = [p for p in proxies if p not in failed]
+
+            if not available:
+                if proxy_config.PROXY_AUTO_SWITCH:
+                    continue
+                if proxy_config.PROXY_FALLBACK_TO_DIRECT:
+                    self.active_provider_name = "none"
+                    self.current_proxy = None
+                    return None
+                self.provider_failed[provider].clear()
+                available = proxies
+
+            if not available:
+                continue
+
+            self.active_provider_name = provider
+            if proxy_config.PROXY_ROTATION_PER_ROW:
+                self.current_proxy = random.choice(available)
+            elif self.current_proxy not in available:
+                self.current_proxy = available[0]
+
+            logger.debug(
+                f"[PROXY] Provider={provider} using {self._sanitize_url(self.current_proxy)}"
+            )
+            return self.current_proxy
+
+        if proxy_config.PROXY_FALLBACK_TO_DIRECT:
+            self.active_provider_name = "none"
+            self.current_proxy = None
+            logger.warning("[PROXY] No healthy proxies left. Falling back to direct connection")
+            return None
+
+        logger.warning("[PROXY] No healthy proxies available")
+        return None
     
-    def mark_proxy_failed(self, proxy: Optional[Dict]):
+    def mark_proxy_failed(self, proxy: Optional[str]):
         """Mark a proxy as failed for this session."""
-        if proxy and "http" in proxy:
-            self.failed_proxies.add(proxy["http"])
-            logger.warning(f"[PROXY] Marked failed: {self._sanitize_url(proxy['http'])}")
+        if not proxy:
+            return
+        provider = self.active_provider_name
+        if provider not in self.provider_failed:
+            return
+
+        self.provider_failed[provider].add(proxy)
+        logger.warning(
+            f"[PROXY] Marked failed: provider={provider} {self._sanitize_url(proxy)}"
+        )
     
     def reset_failed_proxies(self):
         """Reset the failed proxy set."""
-        self.failed_proxies.clear()
+        for failed in self.provider_failed.values():
+            failed.clear()
         logger.debug("[PROXY] Reset failed proxy list")
     
     @staticmethod
@@ -127,7 +184,10 @@ class ProxyManager:
         try:
             parsed = urlparse(url)
             if parsed.password:
-                return f"{parsed.scheme}://***:***@{parsed.netloc}{parsed.path}"
+                host = parsed.hostname or "unknown-host"
+                if parsed.port:
+                    host = f"{host}:{parsed.port}"
+                return f"{parsed.scheme}://***:***@{host}{parsed.path}"
             return url
         except:
             return url
@@ -145,11 +205,16 @@ def get_proxy_manager() -> ProxyManager:
     return _proxy_manager
 
 
-def get_next_proxy() -> Optional[Dict]:
+def get_next_proxy() -> Optional[str]:
     """Convenience function to get next proxy."""
     return get_proxy_manager().get_next_proxy()
 
 
-def mark_proxy_failed(proxy: Optional[Dict]):
+def mark_proxy_failed(proxy: Optional[str]):
     """Convenience function to mark proxy as failed."""
     get_proxy_manager().mark_proxy_failed(proxy)
+
+
+def get_active_provider() -> str:
+    """Return active provider name for monitoring/logging."""
+    return get_proxy_manager().active_provider_name

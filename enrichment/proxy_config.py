@@ -11,8 +11,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Proxy Service Selection ──────────────────────────────────────────────────
-# Supported services: "brightdata", "oxylabs", "smartproxy", "manual", "none"
+# Supported services: "auto", "brightdata", "oxylabs", "smartproxy", "generic", "manual", "none"
 PROXY_SERVICE = os.getenv("PROXY_SERVICE", "none").lower()
+# If PROXY_SERVICE=auto, manager tries providers in this order.
+AUTO_PROVIDER_PRIORITY = [
+    p.strip().lower()
+    for p in os.getenv(
+        "AUTO_PROVIDER_PRIORITY",
+        "smartproxy,oxylabs,brightdata,generic,manual,none"
+    ).split(",")
+    if p.strip()
+]
 
 # ── Bright Data (Luminati) ───────────────────────────────────────────────────
 # From: https://brightdata.com/proxy-types/residential-proxies
@@ -43,6 +52,16 @@ MANUAL_PROXIES = [
     # "socks5://proxy3.com:1080",
 ]
 
+# ── Generic Provider (works with any service URL) ───────────────────────────
+# Example:
+# GENERIC_PROXY_URL=http://username:password@gateway.provider.com:10000
+GENERIC_PROXY_URL = os.getenv("GENERIC_PROXY_URL", "").strip()
+# Optional pool (comma separated). Example:
+# GENERIC_PROXY_POOL=http://u:p@ip1:port,http://u:p@ip2:port
+GENERIC_PROXY_POOL = [
+    p.strip() for p in os.getenv("GENERIC_PROXY_POOL", "").split(",") if p.strip()
+]
+
 # ── Proxy Settings ───────────────────────────────────────────────────────────
 PROXY_TIMEOUT = int(os.getenv("PROXY_TIMEOUT", "15"))  # seconds
 PROXY_ROTATION_PER_ROW = os.getenv("PROXY_ROTATION_PER_ROW", "true").lower() == "true"
@@ -52,6 +71,7 @@ PROXY_ROTATION_PER_ROW = os.getenv("PROXY_ROTATION_PER_ROW", "true").lower() == 
 PROXY_RETRY_COUNT = int(os.getenv("PROXY_RETRY_COUNT", "2"))  # Retries on proxy failure
 PROXY_FALLBACK_TO_DIRECT = os.getenv("PROXY_FALLBACK_TO_DIRECT", "true").lower() == "true"
 # If True, falls back to direct connection if all proxies fail
+PROXY_AUTO_SWITCH = os.getenv("PROXY_AUTO_SWITCH", "true").lower() == "true"
 
 # ── Proxy Usage Instructions ─────────────────────────────────────────────────
 PROXY_INSTRUCTIONS = """

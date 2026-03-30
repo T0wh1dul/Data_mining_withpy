@@ -27,6 +27,7 @@ from enrichment.nlp_extractor import extract_new_company_nlp, load_nlp_model
 from enrichment.linkedin import smart_linkedin_search
 from enrichment.website import smart_website_search
 from enrichment.search import RateLimitException
+from enrichment.monitor import log_event
 from enrichment.utils import normalize_text
 
 
@@ -285,6 +286,7 @@ def _print_record_status(index: int, total: int, row_id: str, name: str, company
 def main() -> None:
     setup_logging()
     logger = logging.getLogger("main")
+    log_event("run_start", level="info")
 
     # Fail fast if spaCy model is missing
     try:
@@ -292,6 +294,7 @@ def main() -> None:
         logger.info("✓ spaCy model loaded successfully")
     except RuntimeError as exc:
         logger.error(f"✗ {str(exc)}")
+        log_event("fatal_error", level="error", stage="nlp_model", error=str(exc)[:200])
         return
 
     memory = load_memory()
@@ -304,9 +307,11 @@ def main() -> None:
         logger.info(f"✓ Loaded {len(df)} total records from input")
     except FileNotFoundError:
         logger.error(f"✗ Input file not found: {config.INPUT_FILE}")
+        log_event("fatal_error", level="error", stage="input_load", error="input file not found")
         return
     except Exception as exc:
         logger.error(f"✗ Error reading input file: {str(exc)}")
+        log_event("fatal_error", level="error", stage="input_load", error=str(exc)[:200])
         return
     
     processed = _init_output_file(df)
@@ -315,6 +320,7 @@ def main() -> None:
 
     if remaining.empty:
         logger.info("\n✓ All rows already processed! Nothing to do.\n")
+        log_event("run_noop", level="info", reason="all rows processed")
         return
 
     # Create stats tracker
@@ -335,6 +341,7 @@ def main() -> None:
             is_valid, error_msg = _validate_row_data(row_id, name, company, location, industry)
             if not is_valid:
                 logger.warning(f"Skipping ID {row_id}: {error_msg}")
+                log_event("row_skipped", level="warning", row_id=row_id, reason=error_msg)
                 stats.add_error()
                 continue
             
@@ -403,10 +410,18 @@ def main() -> None:
             # ──────────────────────────────────────────────────────────────
             if _append_row_safe(row_data, max_retries=3):
                 stats.add_success(confidence)
+                log_event(
+                    "row_completed",
+                    level="info",
+                    row_id=row_id,
+                    confidence=confidence,
+                    status=job_status,
+                )
                 _print_record_status(idx, total_rows, row_id, name, company, job_status, confidence)
             else:
                 stats.add_error()
                 logger.error(f"✗ ID {row_id}: Failed to write output row after retries")
+                log_event("row_error", level="error", row_id=row_id, error="output write failed")
                 # Continue to next row instead of crashing
                 continue
             
@@ -432,6 +447,12 @@ def main() -> None:
             logger.warning(
                 f"Rate limited! Waiting {config.BLOCK_WAIT_MINUTES} minutes before resuming..."
             )
+            log_event(
+                "rate_limited_wait",
+                level="warning",
+                wait_minutes=config.BLOCK_WAIT_MINUTES,
+                resume_at=datetime.now().strftime('%H:%M:%S'),
+            )
             logger.warning(f"Resume time: {datetime.now().strftime('%H:%M:%S')}")
             print("-"*80 + "\n")
             time.sleep(wait_sec)
@@ -440,9 +461,17 @@ def main() -> None:
             stats.add_error()
             error_msg = str(exc)[:80]
             logger.error(f"✗ Error on ID {row_id}: {error_msg}")
+            log_event("row_error", level="error", row_id=row_id, error=error_msg)
             # Continue processing — don't crash on individual row errors
 
     stats.display_summary()
+    log_event(
+        "run_complete",
+        level="info",
+        processed=stats.processed,
+        errors=stats.errors,
+        high_confidence=stats.high_confidence,
+    )
     logger.info(f"✓ Output file: {config.OUTPUT_FILE}")
     logger.info(f"✓ Detailed logs: enrichment.log")
     logger.info(f"✓ Columns in output: {len(OUTPUT_COLUMNS)}\n")
